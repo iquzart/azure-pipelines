@@ -1,0 +1,231 @@
+#
+# Azure DevOps pipeline
+#
+# Application     : <Application Name>
+# Deployment      : Docker Compose
+# Deployment tool : Ansible
+# Created by      : Muhammed Iqbal
+# Maintained by   : <> 
+#
+#
+
+
+
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - master
+    - development
+  paths:
+    exclude:
+    - chart/* 
+    - azure-pipelines.yml
+    - README.md
+    - playbook
+
+# Don't run against PRs
+pr: none
+
+variables:
+- group: <Valiable Group Name>
+
+- name: tag
+  value:  $(Build.SourceBranchName)-$(GitShortSha)
+
+- name: containerRegistryServiceConnection
+  value: '<Registry Connection Name>'
+
+- name: imageRepository
+  value: '< Repository/Image Name >'
+
+- name: environment-dev
+  value: '<Development Hostname>'
+
+- name: environment-prod
+  value: '<Production Hostname>'
+
+  
+
+stages:
+- stage: Build
+  displayName: Build image
+
+  jobs:  
+  - job: Build
+    displayName: Build
+    pool:
+      vmImageName: 'ubuntu-latest'
+
+    steps:
+    - checkout: self
+      clean: true
+      displayName: Cleaning local repo
+
+    - script: GitShortSha=`git rev-parse --short HEAD` && echo "##vso[task.setvariable variable=GitShortSha]$GitShortSha"
+      displayName: Set the Git Short SHA as an environment variablie
+
+    - task: Docker@2
+      displayName: Build Container Image
+      inputs:
+        containerRegistry: '$(containerRegistryServiceConnection)'
+        repository: '$(imageRepository)'
+        command: 'build'
+        Dockerfile: '**/Dockerfile'
+        tags: '$(tag)'
+        
+    - task: Docker@2
+      displayName: Push Image to ACR
+      inputs:
+        containerRegistry: '$(containerRegistryServiceConnection)'
+        repository: '$(imageRepository)'
+        command: 'push'
+        tags: '$(tag)'
+
+    - task: Bash@3
+      displayName: Set variables to share between stages 
+      inputs:
+        targetType: 'inline'
+        script: |
+          mkdir -p $(System.DefaultWorkingDirectory)/playbook/variables
+          echo $(tag) > $(System.DefaultWorkingDirectory)/playbook/variables/tag
+
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish artifacts
+      inputs:
+        targetPath: '$(System.DefaultWorkingDirectory)/playbook'
+        artifact: 'ansible'
+
+
+  
+
+- stage: DeployDevelopment
+  displayName: Deploy Development
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/development'))
+  dependsOn: Build
+
+  jobs:
+  - deployment: Development
+    displayName: Deploy Development
+    pool:
+      name: 'self-hosted-linux'
+    environment: $(environment-dev)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifact: 'ansible'
+                          
+          - script: tag=`cat $(Pipeline.Workspace)/variables/tag` && echo "##vso[task.setvariable variable=tag]$tag"
+            displayName: Set the Git Short SHA as an environment variable
+
+          - task: Bash@3
+            displayName: Seting up Playbook
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "
+                - hosts: $(environment-dev)
+                  gather_facts: no
+                  vars:
+                    NODE_ENV: development
+                    PORT: $(PORT)
+                    AppImageName: <Image Name>
+                    mTLS_PROXY_IMAGE: <Image Name>
+                    PROXY_PORT: 8443
+                    
+                  tasks:
+                    - name: Create docker-compose file
+                      template:
+                        src: docker-compose.yml.j2
+                        dest: /opt/apps/<App Name>/docker-compose.yml
+                        owner: devops
+                        group: devops
+                        mode: 02777
+                
+                    - name: Run docker-compose up -d
+                      shell: docker-compose up -d
+                      args:
+                        chdir: /opt/apps/<App Name>/" > ../ansible/docker-deploy.yaml
+
+          - task: Bash@3
+            displayName: Display Playbook - Development
+            inputs:
+              targetType: 'inline'
+              script: 'cat ../ansible/docker-deploy.yaml'
+          
+          - task: Bash@3
+            displayName: Running Playbook - Development
+            inputs:
+              targetType: 'inline'
+              script: 'ansible-playbook -i ../ansible/hosts.ini ../ansible/docker-deploy.yaml'
+          
+              
+- stage: DeployProduction
+  displayName: Deploy Production
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+  dependsOn: Build
+
+  jobs:
+  - deployment: Production
+    displayName: Deploy Production
+    pool:
+      name: 'self-hosted-linux'
+    environment: $(environment-prod)  
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifact: 'ansible'
+                          
+          - script: tag=`cat $(Pipeline.Workspace)/variables/tag` && echo "##vso[task.setvariable variable=tag]$tag"
+            displayName: Set the Git Short SHA as an environment variable
+
+          - task: Bash@3
+            displayName: Seting up Playbook
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "
+                - hosts: $(environment-prod)
+                  gather_facts: no
+                  vars:
+                    NODE_ENV: development
+                    PORT: $(PORT)
+                    AppImageName: <Image Name>
+                    mTLS_PROXY_IMAGE: <Image Name>
+                    PROXY_PORT: 443
+                    
+                  tasks:
+                    - name: Create docker-compose file
+                      template:
+                        src: docker-compose.yml.j2
+                        dest: /opt/apps/<App Name>/docker-compose.yml
+                        owner: devops
+                        group: devops
+                        mode: 02777
+                
+                    - name: Run docker-compose up -d
+                      shell: docker-compose up -d
+                      args:
+                        chdir: /opt/apps/<App Name>/" > ../ansible/docker-deploy.yaml
+
+          - task: Bash@3
+            displayName: Display Playbook - Production
+            inputs:
+              targetType: 'inline'
+              script: 'cat ../ansible/docker-deploy.yaml'
+          
+          - task: Bash@3
+            displayName: Running Playbook - Production
+            inputs:
+              targetType: 'inline'
+              script: 'ansible-playbook -i ../ansible/hosts.ini ../ansible/docker-deploy.yaml'

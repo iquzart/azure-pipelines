@@ -1,0 +1,29 @@
+version: '3.7'
+
+networks:
+  app-network:
+     name: app-network
+     driver: bridge
+
+services:
+  <App Name>:
+    image: {{ AppImageName }} 
+    container_name: <App Name>
+    environment:
+      - NODE_ENV={{ NODE_ENV }}
+      - PORT={{ PORT }}
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  mtls-proxy:
+    depends_on:
+      - <App Name>
+    image: {{ mTLS_PROXY_IMAGE }}
+    container_name: mtls-proxy
+    restart: unless-stopped
+    ports:
+      - "{{ PROXY_PORT }}:443"
+    networks:
+      - app-network
+

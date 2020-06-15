@@ -1,0 +1,15 @@
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler 
+metadata: 
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+ 
+spec: 
+  maxReplicas: 3 
+  minReplicas: {{ .Values.replicaCount }} 
+  scaleTargetRef: 
+    apiVersion: extensions/v1 
+    kind: Deployment 
+    name: {{ .Release.Name }}
+  targetCPUUtilizationPercentage: 80
