@@ -16,3 +16,10 @@ Pipelines created for various projects.
 2. Push to registry 
 3. Deploy to kubernetes cluster with Helm3
 ```
+
+**docker-webapp**
+``` 
+1. Create Docker Image
+2. Push to registry 
+3. Deploy to Azure Webapp Container
+```
