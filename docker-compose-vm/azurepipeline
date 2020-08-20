@@ -1,0 +1,164 @@
+
+ 
+#
+# Azure DevOps pipeline
+#
+# Application:     eatroot-widget-api
+# Deployment:      Docker Host
+# Deployment tool: docker-compose (VM)
+# Maintained by:   Muhammed Iqbal 
+#
+
+
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - master
+    #- development
+    #- azure-pipelines
+  paths:
+    exclude:
+    - container_configs/* 
+    - azure-pipelines.yml
+    - README.md
+    - Dockerfile
+
+
+# Don't run against PRs
+pr: none
+
+variables:
+- group: <Valiable Group Name>
+
+- name: tag
+  value:  $(Build.SourceBranchName)-$(GitShortSha)
+
+- name: vmImageName
+  value: 'ubuntu-latest'
+
+- name: containerRegistryServiceConnection
+  value: 'ACR'
+
+- name: imageRepository
+  value: '$(appName)/$(imageName)'
+
+- name: DockerEnvironmentProd
+  value: 'Production VM'
+
+
+stages:
+- stage: Build
+  displayName: Build image
+
+  jobs:  
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - checkout: self
+      clean: true
+      displayName: Cleaning local repo
+
+    - script: GitShortSha=`git rev-parse --short HEAD` && echo "##vso[task.setvariable variable=GitShortSha]$GitShortSha"
+      displayName: Set the Git Short SHA as an environment variablie
+      
+    - task: DownloadSecureFile@1
+      name: ApplicationEnvFile
+      displayName: 'Download env file'
+      inputs:
+          secureFile: 'env'
+
+    - script: |
+          echo Copying $(ApplicationEnvFile.secureFilePath) to the $(System.DefaultWorkingDirectory) directory
+          mv $(ApplicationEnvFile.secureFilePath) $(System.DefaultWorkingDirectory)/.env
+        
+    - task: Docker@2
+      displayName: Build Container Image
+      inputs:
+        containerRegistry: '$(containerRegistryServiceConnection)'
+        repository: '$(imageRepository)'
+        command: 'build'
+        Dockerfile: '**/Dockerfile'
+        tags: '$(tag)'
+        
+    - task: Docker@2
+      displayName: Push Image to ACR
+      inputs:
+        containerRegistry: '$(containerRegistryServiceConnection)'
+        repository: '$(imageRepository)'
+        command: 'push'
+        tags: '$(tag)'
+
+    - task: Bash@3
+      displayName: Set variables to share between stages 
+      inputs:
+        targetType: 'inline'
+        script: |
+          mkdir $(System.DefaultWorkingDirectory)/variables
+          echo $(tag) > $(System.DefaultWorkingDirectory)/variables/tag
+          
+    - task: PublishPipelineArtifact@1
+      displayName: Publish artifacts
+      inputs:
+        targetPath: '$(System.DefaultWorkingDirectory)/variables'
+        artifact: 'drop'
+
+
+- stage: DeployProduction
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+  dependsOn: Build
+
+  jobs:
+  - deployment: Production
+    displayName: Deploy Production
+    pool:
+      vmImage: $(vmImageName)
+    environment:
+      name: $(DockerEnvironmentProd)
+      resourceType: VirtualMachine
+    strategy:
+        runOnce:
+          deploy:
+            steps:
+
+            - task: DownloadPipelineArtifact@2
+              inputs:
+                artifact: drop
+         
+            - script: tag=`cat $(Pipeline.Workspace)/drop/tag` && echo "##vso[task.setvariable variable=tag]$tag"
+              displayName: Set the Git Short SHA as an environment variable
+
+
+            - task: Bash@3
+              displayName: Update new image tag
+              inputs:
+                targetType: 'inline'
+                script: sed -E -i'' "s/(.$(imageName):).*/\1$(tag)/" '/data/apps/docker-compose.yaml'
+
+            - task: Bash@3
+              displayName: Start app with new image
+              inputs:
+                targetType: 'inline'
+                script: 'docker-compose -f /data/apps/docker-compose.yaml up -d'
+
+            - task: Bash@3
+              displayName: Wait for container to start (15s)
+              inputs:
+                targetType: 'inline'
+                script: 'sleep 15'
+
+            - task: Bash@3
+              displayName: Run Passport install
+              inputs:
+                targetType: 'inline'
+                script: 'docker exec widget-api sh -c "php artisan passport:install --force"'
+                
+            - task: Bash@3
+              displayName: Run Migrate DB and config cache
+              inputs:
+                targetType: 'inline'
+                script: 'docker exec widget-api sh -c "php artisan migrate --force; php artisan config:cache"'
