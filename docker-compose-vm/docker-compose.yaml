@@ -1,0 +1,47 @@
+version: '3.7'
+
+networks:
+  app-net-prod:
+
+services:
+  api-restaurant:
+    image: restaurant-api:azure-pipelines-7d8024c
+    container_name: restaurant-api
+    restart: unless-stopped
+    networks:
+      - app-net-prod
+
+  api-widget:
+    image: widget-api:azure-pipelines-7c80fd7
+    container_name: widget-api
+    restart: unless-stopped
+    networks:
+      - app-net-prod
+       
+  proxy:
+    image: nginx-proxy:letsencrypt-alpine 
+    container_name: app-proxy
+    restart: unless-stopped
+    depends_on:
+      - "restaurant-api"
+      - "widget-api"   
+
+    volumes:
+      - ./etc/ssl:/etc/nginx/ssl
+      - ./etc/services.conf:/etc/nginx/services.conf
+    ports:
+      - "80:80"
+      - "443:443"
+
+    environment:
+      - TZ=Asia/Dubai
+      - LETSENCRYPT=true
+      - LE_EMAIL=example@gmail.com
+      - LE_FQDN=example.com,example.io
+      #- SSL_CERT=le-crt.pem
+      #- SSL_KEY=le-key.pem
+      #- SSL_CHAIN_CERT=le-chain-crt.pem    
+    networks:
+      - app-net-prod
+
+
